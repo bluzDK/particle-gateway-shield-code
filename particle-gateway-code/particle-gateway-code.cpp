@@ -1,6 +1,11 @@
 #define SLAVE_PTS_PIN TX
 #define MASTER_READY_PIN RX
 
+//Core
+#if PLATFORM_ID==0
+#define SLAVE_ALERT_PIN 16
+#endif
+
 //Photon
 #if PLATFORM_ID==6
 #define SLAVE_ALERT_PIN 16
@@ -54,8 +59,14 @@ void debugPrint(String msg) {
 }
 
 String gatewayID = "No gateway detected yet.";
+int timeGatewayConnected;
+bool gatewayIDDiscovered;
 
 void setup() {
+    timeGatewayConnected = -1;
+    gatewayIDDiscovered = false;
+    
+    
     Particle.variable("gatewayID", gatewayID);
     
     pinMode(A2, OUTPUT);
@@ -65,8 +76,8 @@ void setup() {
     SPI.setClockDivider(SPI_CLOCK_DIV128);
     SPI.setDataMode(SPI_MODE0);
     
-    pinMode(SLAVE_ALERT_PIN, INPUT);
-    pinMode(SLAVE_PTS_PIN, INPUT);
+    pinMode(SLAVE_ALERT_PIN, INPUT_PULLDOWN);
+    pinMode(SLAVE_PTS_PIN, INPUT_PULLDOWN);
     
     pinMode(MASTER_READY_PIN, OUTPUT);
     digitalWrite(MASTER_READY_PIN, LOW);
@@ -75,18 +86,17 @@ void setup() {
     debugPrint("STARTING!");
 }
 
-bool requestIDFlag = false;
-void requestRequestID() {
-    requestIDFlag = true;
-}
+// bool requestIDFlag = false;
+// void requestRequestID() {
+//     requestIDFlag = true;
+// }
 
 void requestID() {
     uint8_t dummy[6] = {(( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 0, 0};
     spi_send(dummy, 6);
 }
 
-Timer timer(20000, requestRequestID, true);
-
+// Timer timer(20000, requestRequestID, true);
 
 char hexToAscii(uint8_t byte)
 {
@@ -129,7 +139,8 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                     m_clients[clientId].connected = true;
                     if (clientId == MAX_CLIENTS-1) {
                         //this is the gateway nrf, get the ID
-                        timer.start();
+                        // timer.start();
+                        timeGatewayConnected = millis();
                     }
                     break;
                 case SOCKET_DISCONNECT:
@@ -253,7 +264,7 @@ void loop() {
     for (int clientId = 0; clientId < MAX_CLIENTS; clientId++) {
         if (!m_clients[clientId].connected) {continue;}
         if (!m_clients[clientId].socket.connected()) {
-            debugPrint("We think we are connected, but this socket is closed: " + String(clientId));
+            // debugPrint("We think we are connected, but this socket is closed: " + String(clientId));
         }
         int bytesAvailable = m_clients[clientId].socket.available();
         if (bytesAvailable > 0) {
@@ -290,9 +301,10 @@ void loop() {
     {
         spi_retreive();
     }
-    if (requestIDFlag) {
+    if (timeGatewayConnected > 0 && millis() - timeGatewayConnected > 20000 && !gatewayIDDiscovered) {
         debugPrint("Asking for id");
         requestID();
-        requestIDFlag = false;
+        gatewayIDDiscovered = true;
+        // requestIDFlag = false;
     }
 }
