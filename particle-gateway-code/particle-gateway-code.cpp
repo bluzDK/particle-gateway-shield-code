@@ -87,24 +87,21 @@ void requestID() {
 
 Timer timer(20000, requestRequestID, true);
 
+
 char hexToAscii(uint8_t byte)
 {
-    if (byte < 0xA) {
-        return byte + 48;
-    } else {
-        return byte + 87;
-    }
+    static const char asciimap[] = "0123456789abcdef";
+    return asciimap[byte & 0x0f];
 }
 
 void parseID(char *destination, uint8_t *buffer)
 {
     int gatewayIndex = 0;
     for (int i = 0; i < 12; i++) {
-        destination[gatewayIndex] = hexToAscii( ((buffer[i] >> 4) & 0xF) );
-        destination[gatewayIndex+1] = hexToAscii( (buffer[i] & 0xF) );
-        gatewayIndex += 2;
+        destination[gatewayIndex++] = hexToAscii( ((buffer[i] >> 4) & 0xF) );
+        destination[gatewayIndex++] = hexToAscii( (buffer[i] & 0xF) );
     }
-    destination[25] = 0x00;
+    destination[gatewayIndex] = 0x00;
 }
 
 void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
