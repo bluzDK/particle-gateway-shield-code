@@ -4,21 +4,25 @@
 //Core
 #if PLATFORM_ID==0
 #define SLAVE_ALERT_PIN 16
+#define SLAVE_SELECT A2
 #endif
 
 //Photon
 #if PLATFORM_ID==6
 #define SLAVE_ALERT_PIN 16
+#define SLAVE_SELECT A2
 #endif
 
 //P1
 #if PLATFORM_ID==8
-#define SLAVE_ALERT_PIN 16
+#define SLAVE_ALERT_PIN A0
+#define SLAVE_SELECT DAC
 #endif
 
 //Electron
 #if PLATFORM_ID==10
 #define SLAVE_ALERT_PIN 16
+#define SLAVE_SELECT A2
 #endif
 
 #define CLOUD_DOMAIN "device.spark.io"
@@ -69,7 +73,8 @@ void setup() {
     
     Particle.variable("gatewayID", gatewayID);
     
-    pinMode(A2, OUTPUT);
+    pinMode(SLAVE_SELECT, OUTPUT);
+    digitalWrite(SLAVE_SELECT, HIGH);
     
     SPI.begin();
     SPI.setBitOrder(LSBFIRST);
@@ -177,17 +182,17 @@ void spi_retreive() {
     debugPrint("Handshake complete");
     
     //get the length of data available to read
-    digitalWrite(A2, LOW);
+    digitalWrite(SLAVE_SELECT, LOW);
     uint8_t byte1 = SPI.transfer(0xFF);
     uint8_t byte2 = SPI.transfer(0xFF);
-    digitalWrite(A2, HIGH);
+    digitalWrite(SLAVE_SELECT, HIGH);
     
     //if the nrf51 isn't ready yet, we receve 0xAA, so we wait
     while (byte1 == 0xAA && byte2 == 0xAA) {
-        digitalWrite(A2, LOW);
+        digitalWrite(SLAVE_SELECT, LOW);
         byte1 = SPI.transfer(0xFF);
         byte2 = SPI.transfer(0xFF);
-        digitalWrite(A2, HIGH);
+        digitalWrite(SLAVE_SELECT, HIGH);
     }
     delay(2);
     
@@ -202,13 +207,13 @@ void spi_retreive() {
     for (int chunkIndex = 0; chunkIndex < serialBytesAvailable; chunkIndex+=NRF51_SPI_BUFFER_SIZE)
     {
         while (digitalRead(SLAVE_ALERT_PIN) == LOW) { }
-        digitalWrite(A2, LOW);
+        digitalWrite(SLAVE_SELECT, LOW);
         uint16_t chunkSize = (serialBytesAvailable-chunkIndex > NRF51_SPI_BUFFER_SIZE ? NRF51_SPI_BUFFER_SIZE : serialBytesAvailable-chunkIndex);
         debugPrint("Reading chunk of size " + String(chunkSize));
         for (int innerIndex = 0; innerIndex < chunkSize; innerIndex++) {
             tx_buffer[chunkIndex+innerIndex] = SPI.transfer(0xFF);
         }
-        digitalWrite(A2, HIGH);
+        digitalWrite(SLAVE_SELECT, HIGH);
         
         //give the nrf51 time to resognize end of transmission and set SA back to LOW
         delay(2);
@@ -241,14 +246,14 @@ void spi_send(uint8_t *buf, int len) {
     for (int i = 0; i < len; i+=254) {
         uint16_t size = (len-i > 254 ? 254 : len-i);
         
-        digitalWrite(A2, LOW);
+        digitalWrite(SLAVE_SELECT, LOW);
         for (int j = 0; j < size; j++) {
             rxBuffer[j+1] = SPI.transfer(buf[j+i]);
         }
         if (size >= 254) {
             SPI.transfer(0x01);
         }
-        digitalWrite(A2, HIGH);
+        digitalWrite(SLAVE_SELECT, HIGH);
         delay(50);
         
         //if the nrf51 wasn't ready yet, we will receive this
