@@ -36,6 +36,8 @@
 
 #define NRF51_SPI_BUFFER_SIZE 255
 
+SYSTEM_MODE(SEMI_AUTOMATIC);
+
 /**@brief Gateway Protocol states. */
 typedef enum
 {
@@ -266,6 +268,19 @@ void spi_send(uint8_t *buf, int len) {
 }
 
 void loop() {
+#if PLATFORM_ID==10
+    //Electron, just connect
+    Particle.connect();
+#else
+    //WiFi device, enter listening mode if need be
+    if (!Particle.connected()) {
+        Particle.connect();
+        if (!waitFor(Particle.connected, 60000)) {
+            WiFi.listen();
+        }
+    }
+#endif
+    
     for (int clientId = 0; clientId < MAX_CLIENTS; clientId++) {
         if (!m_clients[clientId].connected) {continue;}
         if (!m_clients[clientId].socket.connected()) {
