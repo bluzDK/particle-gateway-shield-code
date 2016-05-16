@@ -42,7 +42,9 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 typedef enum
 {
     SOCKET_DATA_SERVICE=1,
-    INFO_DATA_SERVICE
+    INFO_DATA_SERVICE,
+    RESERVED_DATA_SERVICE,
+    CUSTOM_DATA_SERVICE
 } gateway_service_ids_t;
 
 typedef enum
@@ -67,6 +69,12 @@ void debugPrint(String msg) {
 String gatewayID = "No gateway detected yet.";
 int timeGatewayConnected;
 bool gatewayIDDiscovered;
+
+
+void handle_custom_data(uint8_t *data, int length) {
+    //if you use BLE.send from any connected DK, the data will end up here
+    
+}
 
 void setup() {
     timeGatewayConnected = -1;
@@ -172,6 +180,9 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
             gatewayID = String(id);
             debugPrint("You're gateway ID is " + String(id));
             Particle.publish("bluz gateway device id", String(id));
+            break;
+        case CUSTOM_DATA_SERVICE:
+            handle_custom_data(buffer+1, length-1);
             break;
     }
 }
