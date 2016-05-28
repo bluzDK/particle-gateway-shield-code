@@ -60,7 +60,7 @@ typedef enum {
 
   __GSID__END /* keep this one last and don't remove it */
 } gateway_service_ids_t;
-const int MAX_SERVICE_ID = (__GSID__END - SOCKET_DATA_SERVICE);
+const int MAX_GW_SERVICE_ID = (__GSID__END - SOCKET_DATA_SERVICE);
 
 typedef enum {
   SOCKET_DATA,
@@ -86,14 +86,13 @@ String gatewayID = "No gateway detected yet.";
 int timeGatewayConnected;
 bool gatewayIDDiscovered;
 
-///////////////////////////////////////////////////////////////
-//////      C U S T O M   D A T A   H A N D L I N G      //////  
-///////////////////////////////////////////////////////////////
-// if you use BLE.send from any connected DK, the data will 
-// end up in the following function, at the END OF THIS FILE.
-void handle_custom_data(uint8_t, int); 
-// DECLARATION ONLY. Actual function is at the end of this file
-///////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////
+//////       C U S T O M   D A T A   H A N D L I N G        //////  
+//////////////////////////////////////////////////////////////////
+//  if you use BLE.send from any connected DK, the data will    // 
+//  end up in ths function ...  at the  ** END OF THIS FILE **  //
+void handle_custom_data(uint8_t, int);                          //
+//////////////////////////////////////////////////////////////////
 
 void setup() 
 {
@@ -128,32 +127,36 @@ void setup()
 
 void requestID()
 {
-  uint8_t dummy[6] = {(( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 0, 0};
-  spi_send(dummy, 6);
+  const int packetSize = 6;
+  const uint16_t dataLen = packetSize-SPI_HEADER_SIZE-BLE_HEADER_SIZE; 
+  uint8_t packet[packetSize] = 
+  {
+    (uint8_t)((dataLen & 0xFF00) >> 8),  // data length high byte 
+    (uint8_t)(dataLen & 0xFF),           // data length low byte
+    MAX_CLIENTS-1,                       // gateway's NRF51 client ID
+    INFO_DATA_SERVICE,
+    0,
+    0
+  };
+  spi_send(packet, packetSize);
 }
 
-// Timer timer(20000, requestRequestID, true);
-
-char hexToAscii(uint8_t byte)
+char *gatewayIDtoCString(uint8_t *buffer)
 {
-  static const char asciimap[] = "0123456789abcdef";
-  return asciimap[byte & 0x0f];
-}
-
-void parseID(char *destination, uint8_t *buffer)
-{
-  int gatewayIndex = 0;
-  for (int i = 0; i < 12; i++) {
-    destination[gatewayIndex++] = hexToAscii( ((buffer[i] >> 4) & 0xF) );
-    destination[gatewayIndex++] = hexToAscii( (buffer[i] & 0xF) );
+  const int id_length = 12;
+  static char output[id_length*2]; // two hex digits per byte
+  int i;
+  for (i = 0; i < id_length; i++) {
+    itoa(buffer[i], output+i*2, 16);
   }
-  destination[gatewayIndex] = 0x00;
+  output[i*2] = '\0'; // string null termination
+  return output;
 }
 
 void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
 {
   uint8_t serviceID = buffer[0];
-  if (serviceID > MAX_SERVICE_ID) return; // sanitize somewhat
+  if (serviceID > MAX_GW_SERVICE_ID) return; // sanitize somewhat
 
   debugPrint("Processing message of size " + String(length) + " with clientID " + String(clientId) + " and service ID " + String(serviceID));
 
@@ -211,11 +214,9 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
         break;
       }
     case INFO_DATA_SERVICE:
-      char id[25];
-      parseID(id, buffer+1);
-      gatewayID = String(id);
+      gatewayID = gatewayIDtoCString(buffer+1);
       gatewayIDDiscovered = true;
-      debugPrint("GATEWAY_ID", String(id));
+      debugPrint("GATEWAY_ID", gatewayID);
       break;
     case CUSTOM_DATA_SERVICE:
       handle_custom_data(buffer+1, length-1);
@@ -385,4 +386,5 @@ void handle_custom_data(uint8_t *data, int length)
 {
   //if you use BLE.send from any connected DK, the data will end up here
 }
+
 
