@@ -92,7 +92,7 @@ bool gatewayIDDiscovered;
 // if you use BLE.send from any connected DK, the data will 
 // end up in the following function, at the END OF THIS FILE.
 void handle_custom_data(uint8_t, int); 
-// !!DECLARATION ONLY. Actual function is at end of this file!!
+// DECLARATION ONLY. Actual function is at the end of this file
 ///////////////////////////////////////////////////////////////
 
 void setup() 
@@ -354,12 +354,13 @@ void loop()
           bytesAvailable = skt->available();
         }
         //add SPI header
-        rx_buffer[0] = (((rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF00) >> 8);
-        rx_buffer[1] = ((rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF);
+        uint16_t dataLength = rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE;
+        rx_buffer[0] = (dataLength & 0xFF00) >> 8;
+        rx_buffer[1] = dataLength & 0xFF;
         rx_buffer[2] = (uint8_t)clientId;
-        //add BLE header, default to socket id of 0 for now since we only support one at the moment
+        //add BLE header
         rx_buffer[3] = SOCKET_DATA_SERVICE;
-        rx_buffer[4] = ((SOCKET_DATA << 4) & 0xF0) | (0 & 0x0F);;
+        rx_buffer[4] = ((SOCKET_DATA << 4) & 0xF0) | (socketId & 0x0F);
 
         spi_send(rx_buffer, rx_buffer_filled);
         debugPrint("Client " + String(clientId) + "->BLE    - " + String(rx_buffer_filled));
