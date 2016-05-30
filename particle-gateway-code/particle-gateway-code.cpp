@@ -153,6 +153,7 @@ char *gatewayIDtoCString(uint8_t *buffer)
   return output;
 }
 
+// process messages coming FROM the BLE network going TO the cloud
 void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
 {
   uint8_t serviceID = buffer[0];
@@ -163,8 +164,8 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
   switch (serviceID) {
     case SOCKET_DATA_SERVICE:
       {
-        uint8_t type = (buffer[1] >> 4 & 0x0F);
-        uint8_t socketId = (buffer[1] & 0xF);
+        uint8_t type = buffer[1] >> 4;
+        uint8_t socketId = buffer[1] & 0xF;
         uint16_t tcp_port = buffer[11] << 8 | buffer[12];
         IPAddress tcp_addr(&buffer[13]); // TODO IPv6
 
@@ -180,14 +181,13 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                 ":"+String(tcp_port)
                 );
 
-            if (skt->connected()) skt->stop(); // take over any existing connection on this socket
-
             SET_TIMEOUT(30000);
             while (!skt->connected()) {
               if (TIMED_OUT()) { 
                 debugPrint("SOCKET_CONNNECT", "TIMED OUT! (30s) Client "+String(clientId)+"["+String(socketId)+"]");
                 break; 
               }
+              // skt->connect() will first close then overwrite any existing connection on this socketId
               if (tcp_addr==0UL) { // no IP supplied, so use Particle's cloud [address:port]
                 skt->connect(CLOUD_DOMAIN, CLOUD_PORT);
               } else {
@@ -208,7 +208,7 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
             break;
           case SOCKET_DATA:
             skt->write(buffer+BLE_HEADER_SIZE, length-BLE_HEADER_SIZE);
-            debugPrint(/* "SOCKET_DATA", */ "Client " + String(clientId) + "->Cloud  - " + String(length-BLE_HEADER_SIZE));
+            debugPrint(/* "SOCKET_DATA", */ "Client " + String(clientId) + "["+String(socketId)+"]->Cloud  - " + String(length-BLE_HEADER_SIZE));
             break;
         }
         break;
@@ -335,8 +335,9 @@ void loop()
 
   if (!Particle.connected()) return;
 
-  for (int clientId = 0; clientId < MAX_CLIENTS; clientId++) {
-    for (int socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
+  // process messages coming FROM the cloud going TO the BLE network
+  for (uint8_t clientId = 0; clientId < MAX_CLIENTS; clientId++) {
+    for (uint8_t socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
 
       TCPClient *skt = &m_clients[clientId].sockets[socketId];
 
@@ -356,15 +357,27 @@ void loop()
         }
         //add SPI header
         uint16_t dataLength = rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE;
-        rx_buffer[0] = (dataLength & 0xFF00) >> 8;
+        rx_buffer[0] = dataLength >> 8;
         rx_buffer[1] = dataLength & 0xFF;
-        rx_buffer[2] = (uint8_t)clientId;
+        rx_buffer[2] = clientId;
         //add BLE header
         rx_buffer[3] = SOCKET_DATA_SERVICE;
-        rx_buffer[4] = ((SOCKET_DATA << 4) & 0xF0) | (socketId & 0x0F);
+        rx_buffer[4] = (SOCKET_DATA << 4) | (socketId & 0x0F);
 
         spi_send(rx_buffer, rx_buffer_filled);
-        debugPrint("Client " + String(clientId) + "->BLE    - " + String(rx_buffer_filled));
+        debugPrint("Client " + String(clientId) + "["+String(socketId)+"]->BLE    - " + String(rx_buffer_filled));
+
+        /////////////////////////////////////////////////////////////////////////
+        ////////// DEBUG
+        char s[5];
+        String data;
+        for (int i=0; i < dataLength+BLE_HEADER_SIZE+SPI_HEADER_SIZE; i++)
+        {
+          sprintf(s, ":%02X:", rx_buffer[i]);
+          data += s;
+        }
+        if (socketId==1) debugPrint("BYTES:", data);                    /////////
+        /////////////////////////////////////////////////////////////////////////
       }
     }
   }
@@ -386,5 +399,6 @@ void handle_custom_data(uint8_t *data, int length)
 {
   //if you use BLE.send from any connected DK, the data will end up here
 }
+
 
 
