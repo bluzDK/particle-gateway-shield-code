@@ -1,3 +1,4 @@
+#define DEBUG 1
 //#define CLOUD_DEBUG 1
 
 #define SLAVE_PTS_PIN TX
@@ -29,9 +30,6 @@
 
 #define CLOUD_DOMAIN "device.spark.io"
 #define CLOUD_PORT 5683
-// #define CLOUD_DOMAIN "10.1.10.175"
-// #define CLOUD_DOMAIN "10.0.1.112"
-// #define CLOUD_PORT 3000
 #define CLIENT_BUF_MAX_SIZE 1024
 #define RX_BUFFER CLIENT_BUF_MAX_SIZE
 #define TX_BUFFER CLIENT_BUF_MAX_SIZE
@@ -52,34 +50,40 @@ SYSTEM_MODE(SEMI_AUTOMATIC);
 /**@brief Gateway Protocol states. */
 typedef enum {
 
-  SOCKET_DATA_SERVICE=1,
-  INFO_DATA_SERVICE,
-  RESERVED_DATA_SERVICE,
-  CUSTOM_DATA_SERVICE,
-  RESOLVER_DATA_SERVICE,
+    SOCKET_DATA_SERVICE=1,
+    INFO_DATA_SERVICE,
+    RESERVED_DATA_SERVICE,
+    CUSTOM_DATA_SERVICE,
+    RESOLVER_DATA_SERVICE,
 
-  __GSID__END /* keep this one last and don't remove it */
+    __GSID__END /* keep this one last and don't remove it */
 } gateway_service_ids_t;
 const int MAX_GW_SERVICE_ID = (__GSID__END - SOCKET_DATA_SERVICE);
 
 typedef enum {
-  SOCKET_DATA,
-  SOCKET_CONNECT,
-  SOCKET_DISCONNECT
+    SOCKET_DATA,
+    SOCKET_CONNECT,
+    SOCKET_DISCONNECT,
+    SOCKET_CONNECTED,
+    SOCKET_FAILED
 } gateway_socket_function_t;
 
 typedef struct {
-  TCPClient sockets[MAX_CLIENT_SOCKETS];
+    TCPClient sockets[MAX_CLIENT_SOCKETS];
+    bool lastKnownState[MAX_CLIENT_SOCKETS];
 } client_t;
 
 client_t m_clients[MAX_CLIENTS];
 
 void debugPrint(String eventName, String eventData = "") 
 {
-  Serial.println(String(millis()) + ":DEBUG: " + eventName + ((eventData=="") ? "" : ": "+eventData) );
-#ifdef CLOUD_DEBUG
-  if (eventData != "") Particle.publish("GW:"+eventName, eventData);
+#ifdef DEBUG
+    Serial.println(String(millis()) + ":DEBUG: " + eventName + ((eventData=="") ? "" : ": "+eventData) );
+ #ifdef CLOUD_DEBUG
+    if (eventData != "") Particle.publish("GW:"+eventName, eventData);
+ #endif
 #endif
+    return;
 }
 
 String gatewayID = "No gateway detected yet.";
@@ -96,28 +100,36 @@ void handle_custom_data(uint8_t, int);                          //
 
 void setup() 
 {
-  timeGatewayConnected = -1;
-  gatewayIDDiscovered = false;
+
+    for (uint8_t clientId = 0; clientId < MAX_CLIENTS; clientId++) {
+        for (uint8_t socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
+            m_clients[clientId].lastKnownState[socketId] = false;
+        }
+    }
+
+    timeGatewayConnected = -1;
+    gatewayIDDiscovered = false;
 
 
-  Particle.variable("gatewayID", gatewayID);
+    Particle.variable("gatewayID", gatewayID);
 
-  pinMode(SLAVE_SELECT, OUTPUT);
-  digitalWrite(SLAVE_SELECT, HIGH);
+    pinMode(SLAVE_SELECT, OUTPUT);
+    digitalWrite(SLAVE_SELECT, HIGH);
 
-  SPI.begin();
-  SPI.setBitOrder(LSBFIRST);
-  SPI.setClockDivider(SPI_CLOCK_DIV128);
-  SPI.setDataMode(SPI_MODE0);
+    SPI.begin();
+    SPI.setBitOrder(LSBFIRST);
+    SPI.setClockDivider(SPI_CLOCK_DIV128);
+    SPI.setDataMode(SPI_MODE0);
 
-  pinMode(SLAVE_ALERT_PIN, INPUT_PULLDOWN);
-  pinMode(SLAVE_PTS_PIN, INPUT_PULLDOWN);
+    pinMode(SLAVE_ALERT_PIN, INPUT_PULLDOWN);
+    pinMode(SLAVE_PTS_PIN, INPUT_PULLDOWN);
 
-  pinMode(MASTER_READY_PIN, OUTPUT);
-  digitalWrite(MASTER_READY_PIN, LOW);
+    pinMode(MASTER_READY_PIN, OUTPUT);
+    digitalWrite(MASTER_READY_PIN, LOW);
 
-  Serial.begin(38400);
-  debugPrint("STARTING!");
+    Serial.begin(38400);
+    delay(2000); // so we don't miss the first few lines of debug data
+    debugPrint("STARTING!");
 }
 
 // bool requestIDFlag = false;
@@ -127,269 +139,328 @@ void setup()
 
 void requestID()
 {
-  const int packetSize = 6;
-  const uint16_t dataLen = packetSize-SPI_HEADER_SIZE-BLE_HEADER_SIZE; 
-  uint8_t packet[packetSize] = 
-  {
-    (uint8_t)((dataLen & 0xFF00) >> 8),  // data length high byte 
-    (uint8_t)(dataLen & 0xFF),           // data length low byte
-    MAX_CLIENTS-1,                       // gateway's NRF51 client ID
-    INFO_DATA_SERVICE,
-    0,
-    0
-  };
-  spi_send(packet, packetSize);
+    const int packetSize = 6;
+    const uint16_t dataLen = packetSize-SPI_HEADER_SIZE-BLE_HEADER_SIZE; 
+    uint8_t packet[packetSize] = 
+    {
+        (uint8_t)((dataLen & 0xFF00) >> 8),  // data length high byte 
+        (uint8_t)(dataLen & 0xFF),           // data length low byte
+        MAX_CLIENTS-1,                       // gateway's NRF51 client ID
+        INFO_DATA_SERVICE,
+        0,
+        0
+    };
+    spi_send(packet, packetSize);
 }
 
 char *gatewayIDtoCString(uint8_t *buffer)
 {
-  const int id_length = 12;
-  static char output[id_length*2]; // two hex digits per byte
-  int i;
-  for (i = 0; i < id_length; i++) {
-    itoa(buffer[i], output+i*2, 16);
-  }
-  output[i*2] = '\0'; // string null termination
-  return output;
+    const int id_length = 12;
+    static char output[id_length*2]; // two hex digits per byte
+    int i;
+    for (i = 0; i < id_length; i++) {
+        itoa(buffer[i], output+i*2, 16);
+    }
+    output[i*2] = '\0'; // string termination
+    return output;
 }
 
 // process messages coming FROM the BLE network going TO the cloud
 void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
 {
-  uint8_t serviceID = buffer[0];
-  if (serviceID > MAX_GW_SERVICE_ID) return; // sanitize somewhat
+    uint8_t serviceID = buffer[0];
+    if (serviceID > MAX_GW_SERVICE_ID) return; // sanitize somewhat
 
-  debugPrint("Processing message of size " + String(length) + " with clientID " + String(clientId) + " and service ID " + String(serviceID));
+    debugPrint("Processing message of size " + String(length) + " with clientID " + String(clientId) + " and service ID " + String(serviceID));
 
-  switch (serviceID) {
-    case SOCKET_DATA_SERVICE:
-      {
-        uint8_t type = buffer[1] >> 4;
-        uint8_t socketId = buffer[1] & 0xF;
-        uint16_t tcp_port = buffer[11] << 8 | buffer[12];
-        IPAddress tcp_addr(&buffer[13]); // TODO IPv6
+#ifdef DEBUG
+    char s[5];
+    String bytes;
+    for (int i = 0; i < length; i++) {
+        sprintf(s, ":%02X:", buffer[i]);
+        bytes += s;
+    }
+    debugPrint("BYTES:", bytes);
+#endif
 
-        if (clientId >= MAX_CLIENTS || socketId >= MAX_CLIENT_SOCKETS) break; // sanitize somewhat
+    switch (serviceID) {
+        case SOCKET_DATA_SERVICE:
+            {
+                debugPrint("SOCKET_DATA_SERVICE :: Client ID " + String(clientId));
 
-        TCPClient *skt = &m_clients[clientId].sockets[socketId];
+                uint8_t type = buffer[1] >> 4;
+                uint8_t socketId = buffer[1] & 0xF;
 
-        switch (type) {
-          case SOCKET_CONNECT:
-            debugPrint("SOCKET_CONNECT",
-                "Connecting Client "+String(clientId)+"["+String(socketId)+"] " +
-                "ADDR="+String(tcp_addr[0])+"."+String(tcp_addr[1])+"."+String(tcp_addr[2])+"."+String(tcp_addr[3]) +
-                ":"+String(tcp_port)
-                );
+                if (clientId >= MAX_CLIENTS || socketId >= MAX_CLIENT_SOCKETS) break; // sanitize somewhat
 
-            SET_TIMEOUT(30000);
-            while (!skt->connected()) {
-              if (TIMED_OUT()) { 
-                debugPrint("SOCKET_CONNNECT", "TIMED OUT! (30s) Client "+String(clientId)+"["+String(socketId)+"]");
-                break; 
-              }
-              // skt->connect() will first close then overwrite any existing connection on this socketId
-              if (tcp_addr==0UL) { // no IP supplied, so use Particle's cloud [address:port]
-                skt->connect(CLOUD_DOMAIN, CLOUD_PORT);
-              } else {
-                skt->connect(tcp_addr, tcp_port);
-              }
-              delay(250);
+                uint16_t tcp_port = 0;
+                IPAddress tcp_addr = 0UL;
+                if (length > 13) {
+                    tcp_port = buffer[11] << 8 | buffer[12];
+                    tcp_addr = (&buffer[13]); // TODO IPv6
+                }
+
+                TCPClient *skt = &m_clients[clientId].sockets[socketId];
+                bool *skt_lastKnownState = &m_clients[clientId].lastKnownState[socketId];
+
+                switch (type) {
+                    
+                    case SOCKET_CONNECT:
+                        debugPrint("SOCKET_CONNECT",
+                                "Connecting Client "+String(clientId)+"["+String(socketId)+"] " +
+                                "ADDR="+String(tcp_addr[0])+"."+String(tcp_addr[1])+"."+String(tcp_addr[2])+"."+String(tcp_addr[3]) +
+                                ":"+String(tcp_port)
+                                );
+
+                        SET_TIMEOUT(30000);
+                        while (!skt->connected()) {
+                            if (TIMED_OUT()) { 
+                                debugPrint("SOCKET_CONNNECT", "TIMED OUT! (30s) Client "+String(clientId)+"["+String(socketId)+"]");
+                                break; 
+                            }
+                            // skt->connect() will first close then overwrite any existing (gateway local) connection on this socketId
+                            if (tcp_addr==0UL) { // no IP supplied, so use Particle's cloud [address:port]
+                                skt->connect(CLOUD_DOMAIN, CLOUD_PORT);
+                            } else {
+                                skt->connect(tcp_addr, tcp_port);
+                            }
+                            delay(250);
+                        }
+
+                        *skt_lastKnownState = skt->connected();
+
+                        debugPrint("SOCKET_CONNECT", "Client "+String(clientId)+"["+String(socketId)+"] "+((skt->connected()) ? "SUCCEEDED!" : "FAILED :-("));
+
+                        // send result of the TCP connection attempt back to the DK
+                        if (clientId != MAX_CLIENTS-1) {  // TODO: Gateway NRF doesn't know how to process this, yet
+                            // SPI header
+                            uint8_t tx_buffer[5];
+                            tx_buffer[0] = 0;
+                            tx_buffer[1] = 0;
+                            tx_buffer[2] = clientId;
+                            //BLE header
+                            tx_buffer[3] = SOCKET_DATA_SERVICE;
+                            tx_buffer[4] = (((skt->connected()) ? SOCKET_CONNECTED : SOCKET_FAILED) << 4) | (socketId & 0x0F);
+                            spi_send(tx_buffer, 5); 
+                        }
+
+                        if (clientId == MAX_CLIENTS-1 && skt->connected()) {
+                            //this is the gateway nrf, get the ID
+                            timeGatewayConnected = millis();
+                        }
+                        break;
+                        
+                    case SOCKET_DISCONNECT:
+                        debugPrint("SOCKET_DISCONNECT", "Client "+String(clientId)+"["+String(socketId)+"]");
+                        if (skt->connected()) {
+                            skt->stop(); 
+                            *skt_lastKnownState = false; 
+                        }
+                        break;
+                        
+                    case SOCKET_DATA:
+                        skt->write(buffer+BLE_HEADER_SIZE, length-BLE_HEADER_SIZE);
+                        debugPrint("SOCKET_DATA", "Client " + String(clientId) + "["+String(socketId)+"]->Cloud  - " + String(length-BLE_HEADER_SIZE));
+                        break;
+                }
+                break;
             }
-            debugPrint("SOCKET_CONNECT", "Client "+String(clientId)+"["+String(socketId)+"] CONNECTED");
-
-            if (clientId == MAX_CLIENTS-1) {
-              //this is the gateway nrf, get the ID
-              timeGatewayConnected = millis();
-            }
+        case INFO_DATA_SERVICE:
+            gatewayID = gatewayIDtoCString(buffer+1);
+            gatewayIDDiscovered = true;
+            debugPrint("GATEWAY_ID", gatewayID);
             break;
-          case SOCKET_DISCONNECT:
-            debugPrint("SOCKET_DISCONNECT", "Client "+String(clientId)+"["+String(socketId)+"]");
-            if (skt->connected()) { skt->stop(); }
+        case CUSTOM_DATA_SERVICE:
+            handle_custom_data(buffer+1, length-1);
             break;
-          case SOCKET_DATA:
-            skt->write(buffer+BLE_HEADER_SIZE, length-BLE_HEADER_SIZE);
-            debugPrint(/* "SOCKET_DATA", */ "Client " + String(clientId) + "["+String(socketId)+"]->Cloud  - " + String(length-BLE_HEADER_SIZE));
+        case RESOLVER_DATA_SERVICE:
+            /* take supplied domain name, resolve its IP address and return the result to the 'DK client */
             break;
-        }
-        break;
-      }
-    case INFO_DATA_SERVICE:
-      gatewayID = gatewayIDtoCString(buffer+1);
-      gatewayIDDiscovered = true;
-      debugPrint("GATEWAY_ID", gatewayID);
-      break;
-    case CUSTOM_DATA_SERVICE:
-      handle_custom_data(buffer+1, length-1);
-      break;
-    case RESOLVER_DATA_SERVICE:
-      /* take supplied domain name, resolve its IP address and return the result to the 'DK client */
-      break;
-  }
+    }
 }
 
 void spi_retreive() 
 {
-  debugPrint("In SPI Receive");
-  digitalWrite(MASTER_READY_PIN, HIGH);
-  SET_TIMEOUT(200); while (digitalRead(SLAVE_ALERT_PIN) == LOW) { if (TIMED_OUT()) return; }
-  digitalWrite(MASTER_READY_PIN, LOW);
-  debugPrint("Handshake complete");
-
-  //get the length of data available to read
-  digitalWrite(SLAVE_SELECT, LOW);
-  uint8_t byte1 = SPI.transfer(0xFF);
-  uint8_t byte2 = SPI.transfer(0xFF);
-  digitalWrite(SLAVE_SELECT, HIGH);
-
-  //if the nrf51 isn't ready yet, we receve 0xAA, so we wait
-  while (byte1 == 0xAA && byte2 == 0xAA) {
-    digitalWrite(SLAVE_SELECT, LOW);
-    byte1 = SPI.transfer(0xFF);
-    byte2 = SPI.transfer(0xFF);
-    digitalWrite(SLAVE_SELECT, HIGH);
-  }
-  delay(2);
-
-  int serialBytesAvailable = (byte1 << 8) | byte2;
-  debugPrint("Receiving SPI data of size " + String(serialBytesAvailable));
-
-  //if there is no data, we're done
-  if (serialBytesAvailable == 0) { return; }
-
-  uint8_t tx_buffer[TX_BUFFER];
-  //read the data one chunk at a time
-  for (int chunkIndex = 0; chunkIndex < serialBytesAvailable; chunkIndex+=NRF51_SPI_BUFFER_SIZE) {
+    debugPrint("INCOMING SPI :");
+    digitalWrite(MASTER_READY_PIN, HIGH);
     SET_TIMEOUT(200); while (digitalRead(SLAVE_ALERT_PIN) == LOW) { if (TIMED_OUT()) return; }
+    digitalWrite(MASTER_READY_PIN, LOW);
+    debugPrint("Handshake complete");
+
+    //get the length of data available to read
     digitalWrite(SLAVE_SELECT, LOW);
-    uint16_t chunkSize = (serialBytesAvailable-chunkIndex > NRF51_SPI_BUFFER_SIZE ? NRF51_SPI_BUFFER_SIZE : serialBytesAvailable-chunkIndex);
-    debugPrint("Reading chunk of size " + String(chunkSize));
-    for (int innerIndex = 0; innerIndex < chunkSize; innerIndex++) {
-      tx_buffer[chunkIndex+innerIndex] = SPI.transfer(0xFF);
-    }
+    uint8_t byte1 = SPI.transfer(0xFF);
+    uint8_t byte2 = SPI.transfer(0xFF);
     digitalWrite(SLAVE_SELECT, HIGH);
 
-    //give the nrf51 time to resognize end of transmission and set SA back to LOW
+    //if the nrf51 isn't ready yet, we receve 0xAA, so we wait
+    while (byte1 == 0xAA && byte2 == 0xAA) {
+        digitalWrite(SLAVE_SELECT, LOW);
+        byte1 = SPI.transfer(0xFF);
+        byte2 = SPI.transfer(0xFF);
+        digitalWrite(SLAVE_SELECT, HIGH);
+    }
     delay(2);
 
-    //if the nrf51 wasn't ready yet, we will receive this
-    if (tx_buffer[chunkIndex] == 0xAA && tx_buffer[chunkIndex+chunkSize-1] == 0xAA) {
-      chunkIndex-=NRF51_SPI_BUFFER_SIZE;
+    int serialBytesAvailable = (byte1 << 8) | byte2;
+    debugPrint("Receiving SPI data of size " + String(serialBytesAvailable));
+
+    //if there is no data, we're done
+    if (serialBytesAvailable == 0) { return; }
+
+    uint8_t tx_buffer[TX_BUFFER];
+    //read the data one chunk at a time
+    for (int chunkIndex = 0; chunkIndex < serialBytesAvailable; chunkIndex+=NRF51_SPI_BUFFER_SIZE) {
+        SET_TIMEOUT(200); while (digitalRead(SLAVE_ALERT_PIN) == LOW) { if (TIMED_OUT()) return; }
+        digitalWrite(SLAVE_SELECT, LOW);
+        uint16_t chunkSize = (serialBytesAvailable-chunkIndex > NRF51_SPI_BUFFER_SIZE ? NRF51_SPI_BUFFER_SIZE : serialBytesAvailable-chunkIndex);
+        debugPrint("Reading chunk of size " + String(chunkSize));
+        for (int innerIndex = 0; innerIndex < chunkSize; innerIndex++) {
+            tx_buffer[chunkIndex+innerIndex] = SPI.transfer(0xFF);
+        }
+        digitalWrite(SLAVE_SELECT, HIGH);
+
+        //give the nrf51 time to resognize end of transmission and set SA back to LOW
+        delay(2);
+
+        //if the nrf51 wasn't ready yet, we will receive this
+        if (tx_buffer[chunkIndex] == 0xAA && tx_buffer[chunkIndex+chunkSize-1] == 0xAA) {
+            chunkIndex-=NRF51_SPI_BUFFER_SIZE;
+        }
     }
-  }
 
-  //now process the data one message at a time
-  int msgPointer = 0;
-  while (msgPointer < serialBytesAvailable) {
+    //now process the data one message at a time
+    int msgPointer = 0;
+    while (msgPointer < serialBytesAvailable) {
 
-    int msgLength = (tx_buffer[msgPointer] << 8) | tx_buffer[msgPointer+1];
-    uint8_t clientId = tx_buffer[msgPointer+2];
-    msgPointer += SPI_HEADER_SIZE; //move the pointer past the header
-
-    spi_data_process(tx_buffer+msgPointer, msgLength+BLE_HEADER_SIZE, clientId);
-    debugPrint("Read length = " + String(msgLength));
-    msgPointer += msgLength+BLE_HEADER_SIZE;
-  }
+        int msgLength = (tx_buffer[msgPointer] << 8) | tx_buffer[msgPointer+1];
+        uint8_t clientId = tx_buffer[msgPointer+2];
+        msgPointer += SPI_HEADER_SIZE; //move the pointer past the header
+        
+        spi_data_process(tx_buffer+msgPointer, msgLength+BLE_HEADER_SIZE, clientId);
+        
+        msgPointer += msgLength+BLE_HEADER_SIZE;
+    }
 }
 
 void spi_send(uint8_t *buf, int len) 
 {
-  uint8_t rxBuffer[len];
-  debugPrint("Starting to send data");
-  //nrf51822 can't handle SPI data in chunks bigger than 256 bytes. split it up
-  for (int i = 0; i < len; i+=254) {
-    uint16_t size = (len-i > 254 ? 254 : len-i);
+    uint8_t rxBuffer[len];
+    debugPrint("SPI:: Sending " + String(len) + " bytes for Client " + String(buf[2]) + "["+String(buf[4]&0xF) +"] ...");
+    //nrf51822 can't handle SPI data in chunks bigger than 256 bytes. split it up
 
-    digitalWrite(SLAVE_SELECT, LOW);
-    for (int j = 0; j < size; j++) {
-      rxBuffer[j+1] = SPI.transfer(buf[j+i]);
-    }
-    if (size >= 254) {
-      SPI.transfer(0x01);
-    }
-    digitalWrite(SLAVE_SELECT, HIGH);
-    delay(50);
+#ifdef DEBUG
+    char s[5];
+    String bytes;
+#endif
+    for (int i = 0; i < len; i+=254) {
+        uint16_t size = (len-i > 254 ? 254 : len-i);
 
-    //if the nrf51 wasn't ready yet, we will receive this
-    if (rxBuffer[i] == 0xAA && rxBuffer[i+size-1] == 0xAA) {
-      i-=254;
-      debugPrint("Resetting the counter since i only see AA");
+        digitalWrite(SLAVE_SELECT, LOW);
+        for (int j = 0; j < size; j++) {
+            rxBuffer[j+1] = SPI.transfer(buf[j+i]);
+#ifdef DEBUG
+            sprintf(s, ":%02X:", buf[j+i]);
+            bytes += s;
+#endif
+        }
+        if (size >= 254) {
+            SPI.transfer(0x01);
+        }
+        digitalWrite(SLAVE_SELECT, HIGH);
+        delay(50);
+
+        //if the nrf51 wasn't ready yet, we will receive this
+        if (rxBuffer[i] == 0xAA && rxBuffer[i+size-1] == 0xAA) {
+            i-=254;
+            debugPrint("Resetting the counter since I only see AA");
+        }
     }
-  }
-  debugPrint("Completed Sending");
+    debugPrint("BYTES:", bytes);
 }
 
 void loop() 
 {
 #if PLATFORM_ID==10
-  //Electron, just connect
-  Particle.connect();
-#else
-  //WiFi device, enter listening mode if need be
-  if (!Particle.connected()) {
+    //Electron, just connect
     Particle.connect();
-    if (!waitFor(Particle.connected, 60000)) {
-      WiFi.listen();
+#else
+    //WiFi device, enter listening mode if need be
+    if (!Particle.connected()) {
+        Particle.connect();
+        if (!waitFor(Particle.connected, 60000)) {
+            WiFi.listen();
+        }
     }
-  }
 #endif
 
-  if (!Particle.connected()) return;
+    if (!Particle.connected()) return;
 
-  // process messages coming FROM the cloud going TO the BLE network
-  for (uint8_t clientId = 0; clientId < MAX_CLIENTS; clientId++) {
-    for (uint8_t socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
+    // process messages coming FROM the cloud going TO the BLE network
+    for (uint8_t clientId = 0; clientId < MAX_CLIENTS; clientId++) {
+        for (uint8_t socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
 
-      TCPClient *skt = &m_clients[clientId].sockets[socketId];
+            TCPClient *skt = &m_clients[clientId].sockets[socketId];
+            bool *skt_lastKnownState = &m_clients[clientId].lastKnownState[socketId];
 
-      if (!skt->connected()) {continue;}
-
-      int bytesAvailable = skt->available();
-      if (bytesAvailable > 0) {
-        //Spark devices only support a 128 byte buffer, but we want one SPI transaction, so buffer the data
-        uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
-        int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
-        while (bytesAvailable > 0) {
-          for (int i = 0; i < bytesAvailable; i++) {
-            rx_buffer[i+rx_buffer_filled] = skt->read();
-          }
-          rx_buffer_filled += bytesAvailable;
-          bytesAvailable = skt->available();
+            if (!skt->connected()) {
+                if (*skt_lastKnownState) { // if we thought we were connected but actually aint ... 
+                    *skt_lastKnownState = false; 
+                    
+                    // Notify the DK ...
+                    if (clientId != MAX_CLIENTS-1) { // TODO: Gateway NRF doesn't know how to process this, yet
+                        // notify the DK
+                        uint8_t tx_buffer[5];
+                        // SPI header
+                        tx_buffer[0] = 0;
+                        tx_buffer[1] = 0;
+                        tx_buffer[2] = clientId;
+                        //add BLE header
+                        tx_buffer[3] = SOCKET_DATA_SERVICE;
+                        tx_buffer[4] = (SOCKET_DISCONNECT << 4) | (socketId & 0x0F);
+                        
+                        spi_send(tx_buffer, 5);
+                    }
+                }    
+                continue; // to next in for loop
+                
+            } else { // this socket is connected. Check for inbound ...
+            
+                int bytesAvailable = skt->available();
+                if (bytesAvailable > 0) {
+                    //Spark devices only support a 128 byte buffer, but we want one SPI transaction, so buffer the data
+                    uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
+                    int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
+                    while (bytesAvailable > 0) {
+                        for (int i = 0; i < bytesAvailable; i++) {
+                            rx_buffer[i+rx_buffer_filled] = skt->read();
+                        }
+                        rx_buffer_filled += bytesAvailable;
+                        bytesAvailable = skt->available();
+                    }
+                    //set SPI header
+                    uint16_t dataLength = rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE;
+                    rx_buffer[0] = dataLength >> 8;
+                    rx_buffer[1] = dataLength & 0xFF;
+                    rx_buffer[2] = clientId;
+                    //set BLE header
+                    rx_buffer[3] = SOCKET_DATA_SERVICE;
+                    rx_buffer[4] = (SOCKET_DATA << 4) | (socketId & 0x0F);
+                    
+                    spi_send(rx_buffer, rx_buffer_filled);
+                }
+            }
         }
-        //add SPI header
-        uint16_t dataLength = rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE;
-        rx_buffer[0] = dataLength >> 8;
-        rx_buffer[1] = dataLength & 0xFF;
-        rx_buffer[2] = clientId;
-        //add BLE header
-        rx_buffer[3] = SOCKET_DATA_SERVICE;
-        rx_buffer[4] = (SOCKET_DATA << 4) | (socketId & 0x0F);
-
-        spi_send(rx_buffer, rx_buffer_filled);
-        debugPrint("Client " + String(clientId) + "["+String(socketId)+"]->BLE    - " + String(rx_buffer_filled));
-
-        /////////////////////////////////////////////////////////////////////////
-        ////////// DEBUG
-        char s[5];
-        String data;
-        for (int i=0; i < dataLength+BLE_HEADER_SIZE+SPI_HEADER_SIZE; i++)
-        {
-          sprintf(s, ":%02X:", rx_buffer[i]);
-          data += s;
-        }
-        if (socketId==1) debugPrint("BYTES:", data);                    /////////
-        /////////////////////////////////////////////////////////////////////////
-      }
     }
-  }
-  if (digitalRead(SLAVE_PTS_PIN)) {
-    spi_retreive();
-  }
-  if ( !gatewayIDDiscovered && timeGatewayConnected > 0 && (millis() - timeGatewayConnected > 10000) ) {
-    static int count = 0;
-    debugPrint("Asking for ID :: Attempt " + String(++count));
-    requestID(); // gatewayIDDiscovered will be set when the data actually arrives
-    timeGatewayConnected = millis(); // reset time, in case we have to try again
-  }
+    if (digitalRead(SLAVE_PTS_PIN)) {
+        spi_retreive();
+    }
+    if ( !gatewayIDDiscovered && timeGatewayConnected > 0 && (millis() - timeGatewayConnected > 10000) ) {
+        static int count = 0;
+        debugPrint("Asking for ID :: Attempt " + String(++count));
+        requestID(); // gatewayIDDiscovered will be set when the data actually arrives
+        timeGatewayConnected = millis(); // reset time, in case we have to try again
+    }
 }
 
 ///////////////////////////////////////////////////////////////
@@ -397,8 +468,9 @@ void loop()
 ///////////////////////////////////////////////////////////////
 void handle_custom_data(uint8_t *data, int length) 
 {
-  //if you use BLE.send from any connected DK, the data will end up here
+    //if you use BLE.send from any connected DK, the data will end up here
 }
+
 
 
 
