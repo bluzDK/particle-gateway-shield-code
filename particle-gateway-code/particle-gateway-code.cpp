@@ -53,10 +53,9 @@ typedef enum {
     SOCKET_DATA_SERVICE=1,
     INFO_DATA_SERVICE,
     RESERVED_DATA_SERVICE,
-    CUSTOM_DATA_SERVICE,
-    RESOLVER_DATA_SERVICE,
+    CUSTOM_DATA_SERVICE
 
-    __GSID__END /* keep this one last and don't remove it */
+    __GSID__END /* keep this one last and don't remove */
 } gateway_service_ids_t;
 const int MAX_GW_SERVICE_ID = (__GSID__END - SOCKET_DATA_SERVICE);
 
