@@ -1,5 +1,5 @@
-#define DEBUG 1
-//#define CLOUD_DEBUG 1
+#define GW_DEBUG 1
+//#define GW_CLOUD_DEBUG 1
 
 #define SLAVE_PTS_PIN TX
 #define MASTER_READY_PIN RX
@@ -47,14 +47,16 @@ int64_t __start_time;
 
 SYSTEM_MODE(SEMI_AUTOMATIC);
 
+#include <algorithm>
+
 /**@brief Gateway Protocol states. */
 typedef enum {
 
     SOCKET_DATA_SERVICE=1,
     INFO_DATA_SERVICE,
     RESERVED_DATA_SERVICE,
-    CUSTOM_DATA_SERVICE
-
+    CUSTOM_DATA_SERVICE,
+    
     __GSID__END /* keep this one last and don't remove */
 } gateway_service_ids_t;
 const int MAX_GW_SERVICE_ID = (__GSID__END - SOCKET_DATA_SERVICE);
@@ -63,8 +65,8 @@ typedef enum {
     SOCKET_DATA,
     SOCKET_CONNECT,
     SOCKET_DISCONNECT,
-    SOCKET_CONNECTED,
-    SOCKET_FAILED
+    SOCKET_CONNECTED, // also provides remote IP
+    SOCKET_FAILED,
 } gateway_socket_function_t;
 
 typedef struct {
@@ -76,9 +78,9 @@ client_t m_clients[MAX_CLIENTS];
 
 void debugPrint(String eventName, String eventData = "") 
 {
-#ifdef DEBUG
+#ifdef GW_DEBUG
     Serial.println(String(millis()) + ":DEBUG: " + eventName + ((eventData=="") ? "" : ": "+eventData) );
- #ifdef CLOUD_DEBUG
+ #ifdef GW_CLOUD_DEBUG
     if (eventData != "") Particle.publish("GW:"+eventName, eventData);
  #endif
 #endif
@@ -172,7 +174,7 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
 
     debugPrint("Processing message of size " + String(length) + " with clientID " + String(clientId) + " and service ID " + String(serviceID));
 
-#ifdef DEBUG
+#ifdef GW_DEBUG
     char s[5];
     String bytes;
     for (int i = 0; i < length; i++) {
@@ -200,7 +202,7 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                 }
 
                 TCPClient *skt = &m_clients[clientId].sockets[socketId];
-                bool *skt_lastKnownState = &m_clients[clientId].lastKnownState[socketId];
+                bool *lks = &m_clients[clientId].lastKnownState[socketId];
 
                 switch (type) {
                     
@@ -226,21 +228,33 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                             delay(250);
                         }
 
-                        *skt_lastKnownState = skt->connected();
+                        *lks = skt->connected();
 
                         debugPrint("SOCKET_CONNECT", "Client "+String(clientId)+"["+String(socketId)+"] "+((skt->connected()) ? "SUCCEEDED!" : "FAILED :-("));
 
                         // send result of the TCP connection attempt back to the DK
                         if (clientId != MAX_CLIENTS-1) {  // TODO: Gateway NRF doesn't know how to process this, yet
-                            // SPI header
-                            uint8_t tx_buffer[5];
-                            tx_buffer[0] = 0;
-                            tx_buffer[1] = 0;
-                            tx_buffer[2] = clientId;
-                            //BLE header
-                            tx_buffer[3] = SOCKET_DATA_SERVICE;
-                            tx_buffer[4] = (((skt->connected()) ? SOCKET_CONNECTED : SOCKET_FAILED) << 4) | (socketId & 0x0F);
-                            spi_send(tx_buffer, 5); 
+                            IPAddress remoteIP = skt->remoteIP();
+                            uint16_t data_len = (remoteIP.version()==4) ? 4 : (remoteIP.version()==6) ? 16 : 0;
+                            uint8_t tx_buffer[SPI_HEADER_SIZE+BLE_HEADER_SIZE+16] = {
+                                // SPI header
+                                (uint8_t)(data_len >> 8),
+                                (uint8_t)(data_len & 0xFF), 
+                                clientId,
+                                //BLE header
+                                SOCKET_DATA_SERVICE,
+                                (uint8_t)((((skt->connected()) ? SOCKET_CONNECTED : SOCKET_FAILED) << 4) | (socketId & 0x0F)),
+                            };
+                            // IP Address -- IPv6 aware, though not yet tested as such
+                            // Note: IPAddress:: stores addresses in network byte order (little endian). But some 
+                            //       overload trickery reverses the fake array[style] access, for human IP address readers. 
+                            //       Because the the &real_address[0] is inaccesible (private), we roll our own reversed memcpy! ...
+                            uint8_t *first = &remoteIP[((remoteIP.version()==4) ? 3 : 15)]; // Because of the clever overloaded array style reversal thing.
+                            uint8_t *last = &remoteIP[0];                                   // Ditto. In fact, last is first and first is last! (see note above)
+                            uint8_t *dest = &tx_buffer[SPI_HEADER_SIZE+BLE_HEADER_SIZE];
+                            while (first <= last) *(dest++) = *(last--);
+                            spi_send(tx_buffer, SPI_HEADER_SIZE+BLE_HEADER_SIZE+data_len);
+                            // NOTE: bluz firmware should assume that a data_len > 4 means an IPv6 address was sent 
                         }
 
                         if (clientId == MAX_CLIENTS-1 && skt->connected()) {
@@ -253,7 +267,7 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                         debugPrint("SOCKET_DISCONNECT", "Client "+String(clientId)+"["+String(socketId)+"]");
                         if (skt->connected()) {
                             skt->stop(); 
-                            *skt_lastKnownState = false; 
+                            *lks = false; 
                         }
                         break;
                         
@@ -271,9 +285,6 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
             break;
         case CUSTOM_DATA_SERVICE:
             handle_custom_data(buffer+1, length-1);
-            break;
-        case RESOLVER_DATA_SERVICE:
-            /* take supplied domain name, resolve its IP address and return the result to the 'DK client */
             break;
     }
 }
@@ -400,11 +411,11 @@ void loop()
         for (uint8_t socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
 
             TCPClient *skt = &m_clients[clientId].sockets[socketId];
-            bool *skt_lastKnownState = &m_clients[clientId].lastKnownState[socketId];
+            bool *lks = &m_clients[clientId].lastKnownState[socketId];
 
             if (!skt->connected()) {
-                if (*skt_lastKnownState) { // if we thought we were connected but actually aint ... 
-                    *skt_lastKnownState = false; 
+                if (*lks) { // if we thought we were connected but actually aint ... 
+                    *lks = false; 
                     
                     // Notify the DK ...
                     if (clientId != MAX_CLIENTS-1) { // TODO: Gateway NRF doesn't know how to process this, yet
@@ -469,6 +480,7 @@ void handle_custom_data(uint8_t *data, int length)
 {
     //if you use BLE.send from any connected DK, the data will end up here
 }
+
 
 
 
