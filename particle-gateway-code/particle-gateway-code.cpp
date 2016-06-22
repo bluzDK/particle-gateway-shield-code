@@ -187,6 +187,10 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
     switch (serviceID) {
         case SOCKET_DATA_SERVICE:
             {
+                bool isDN;
+                char *destDomain = NULL;
+                IPAddress destIP(0UL);
+
                 debugPrint("SOCKET_DATA_SERVICE :: Client ID " + String(clientId));
 
                 uint8_t type = buffer[1] >> 4;
@@ -195,11 +199,25 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                 if (clientId >= MAX_CLIENTS || socketId >= MAX_CLIENT_SOCKETS) break; // sanitize somewhat
 
                 uint16_t tcp_port = 0;
-                IPAddress tcp_addr = 0UL;
+                uint8_t *destAddr = (&buffer[13]); // the start of the destination address data, IPv4 or Domain String                IPAddress destIP;
+                
+                // assume buffer[10] (socket type) == AF_INET and ignore it
+                
                 if (length > 13) {
                     tcp_port = buffer[11] << 8 | buffer[12];
-                    tcp_addr = (&buffer[13]); // TODO IPv6
-                }
+                    // IP4 or domain name string?
+                    // Domain Name strings are sent here *including* their null terminator.
+                    // We assume that no domain name will be less than 4 chracters plus null terminator
+                    if (length > 17 && buffer[length-1] == '\0' && buffer[length-2] != '\0') { // it's a domain name string
+                        isDN = true;
+                        destDomain = (char *)destAddr;
+                    } else { // it must be an IP address (v4 or v6 ... but TODO: IPv6)
+                        // destIP.version = 4; // We cannot set this. Currently, particle sets it to 4, always
+                        isDN = false;
+                        destIP.set_ipv4(destAddr[0], destAddr[1], destAddr[2], destAddr[3]);
+                    }
+                } else break; // invalid data length
+                
 
                 TCPClient *skt = &m_clients[clientId].sockets[socketId];
                 bool *lks = &m_clients[clientId].lastKnownState[socketId];
@@ -207,23 +225,27 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                 switch (type) {
                     
                     case SOCKET_CONNECT:
-                        debugPrint("SOCKET_CONNECT",
-                                "Connecting Client "+String(clientId)+"["+String(socketId)+"] " +
-                                "ADDR="+String(tcp_addr[0])+"."+String(tcp_addr[1])+"."+String(tcp_addr[2])+"."+String(tcp_addr[3]) +
-                                ":"+String(tcp_port)
-                                );
+                        debugPrint(
+                            "SOCKET_CONNECT",
+                            "Connecting Client "+String(clientId)+"["+String(socketId)+"] " +
+                            "ADDR="+(isDN ? String(destDomain) : String(destIP)) + ":" + String(tcp_port)
+                        );
 
-                        SET_TIMEOUT(30000);
+                        SET_TIMEOUT(30000); // probably excessive
                         while (!skt->connected()) {
                             if (TIMED_OUT()) { 
-                                debugPrint("SOCKET_CONNNECT", "TIMED OUT! (30s) Client "+String(clientId)+"["+String(socketId)+"]");
+                                debugPrint("SOCKET_CONNNECT", "TIMED OUT :-/ (30s) Client "+String(clientId)+"["+String(socketId)+"]");
                                 break; 
                             }
                             // skt->connect() will first close then overwrite any existing (gateway local) connection on this socketId
-                            if (tcp_addr==0UL) { // no IP supplied, so use Particle's cloud [address:port]
+                            if (!isDN && *destAddr==0UL) { // no IP supplied, so use Particle's cloud [address:port]
                                 skt->connect(CLOUD_DOMAIN, CLOUD_PORT);
                             } else {
-                                skt->connect(tcp_addr, tcp_port);
+                                if (isDN) {
+                                    skt->connect(destDomain, tcp_port);
+                                } else {
+                                    skt->connect(destIP, tcp_port);
+                                }
                             }
                             delay(250);
                         }
@@ -245,16 +267,16 @@ void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId)
                                 SOCKET_DATA_SERVICE,
                                 (uint8_t)((((skt->connected()) ? SOCKET_CONNECTED : SOCKET_FAILED) << 4) | (socketId & 0x0F)),
                             };
-                            // IP Address -- IPv6 aware, though not yet tested as such
+                            // IP Address -- IPv6 aware, though not yet tested and not currently supported by Particle firmware
                             // Note: IPAddress:: stores addresses in network byte order (little endian). But some 
-                            //       overload trickery reverses the fake array[style] access, for human IP address readers. 
-                            //       Because the the &real_address[0] is inaccesible (private), we roll our own reversed memcpy! ...
+                            //       overload trickery reverses the faked array[style] access for human IP address readers. 
+                            //       Because the &real_address[0] is inaccesible to us (it's private), we roll our own reversed memcpy ...
                             uint8_t *first = &remoteIP[((remoteIP.version()==4) ? 3 : 15)]; // Because of the clever overloaded array style reversal thing.
                             uint8_t *last = &remoteIP[0];                                   // Ditto. In fact, last is first and first is last! (see note above)
                             uint8_t *dest = &tx_buffer[SPI_HEADER_SIZE+BLE_HEADER_SIZE];
                             while (first <= last) *(dest++) = *(last--);
                             spi_send(tx_buffer, SPI_HEADER_SIZE+BLE_HEADER_SIZE+data_len);
-                            // NOTE: bluz firmware should assume that a data_len > 4 means an IPv6 address was sent 
+                            // NOTE: bluz firmware should assume that (data_len > 4) means an IPv6 address was sent 
                         }
 
                         if (clientId == MAX_CLIENTS-1 && skt->connected()) {
