@@ -1,4 +1,4 @@
-#define GW_DEBUG 1
+//#define GW_DEBUG 1
 //#define GW_CLOUD_DEBUG 1
 
 #define SLAVE_PTS_PIN TX
@@ -91,14 +91,6 @@ String gatewayID = "No gateway detected yet.";
 int timeGatewayConnected;
 bool gatewayIDDiscovered;
 
-//////////////////////////////////////////////////////////////////
-//////       C U S T O M   D A T A   H A N D L I N G        //////  
-//////////////////////////////////////////////////////////////////
-//  if you use BLE.send from any connected DK, the data will    // 
-//  end up in ths function ...  at the  ** END OF THIS FILE **  //
-void handle_custom_data(uint8_t, int);                          //
-//////////////////////////////////////////////////////////////////
-
 void setup() 
 {
 
@@ -157,7 +149,7 @@ void requestID()
 char *gatewayIDtoCString(uint8_t *buffer)
 {
     const int id_length = 12;
-    static char output[id_length*2]; // two hex digits per byte
+    static char output[id_length*2+1]; // two hex digits per byte, plus terminator
     int i;
     for (i = 0; i < id_length; i++) {
         itoa(buffer[i], output+i*2, 16);
@@ -426,8 +418,6 @@ void loop()
     }
 #endif
 
-    if (!Particle.connected()) return;
-
     // process messages coming FROM the cloud going TO the BLE network
     for (uint8_t clientId = 0; clientId < MAX_CLIENTS; clientId++) {
         for (uint8_t socketId = 0; socketId < MAX_CLIENT_SOCKETS; socketId++) {
@@ -436,9 +426,9 @@ void loop()
             bool *lks = &m_clients[clientId].lastKnownState[socketId];
 
             if (!skt->connected()) {
-                if (*lks) { // if we thought we were connected but actually aint ... 
+              if (*lks) {
                     *lks = false; 
-                    
+                    debugPrint("SOCKET DISCONNECTED", "Client " + String(clientId) + "["+String(socketId+"]"));
                     // Notify the DK ...
                     if (clientId != MAX_CLIENTS-1) { // TODO: Gateway NRF doesn't know how to process this, yet
                         // notify the DK
@@ -453,34 +443,31 @@ void loop()
                         
                         spi_send(tx_buffer, 5);
                     }
-                }    
-                continue; // to next in for loop
-                
-            } else { // this socket is connected. Check for inbound ...
-            
-                int bytesAvailable = skt->available();
-                if (bytesAvailable > 0) {
-                    //Spark devices only support a 128 byte buffer, but we want one SPI transaction, so buffer the data
-                    uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
-                    int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
-                    while (bytesAvailable > 0) {
-                        for (int i = 0; i < bytesAvailable; i++) {
-                            rx_buffer[i+rx_buffer_filled] = skt->read();
-                        }
-                        rx_buffer_filled += bytesAvailable;
-                        bytesAvailable = skt->available();
-                    }
-                    //set SPI header
-                    uint16_t dataLength = rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE;
-                    rx_buffer[0] = dataLength >> 8;
-                    rx_buffer[1] = dataLength & 0xFF;
-                    rx_buffer[2] = clientId;
-                    //set BLE header
-                    rx_buffer[3] = SOCKET_DATA_SERVICE;
-                    rx_buffer[4] = (SOCKET_DATA << 4) | (socketId & 0x0F);
-                    
-                    spi_send(rx_buffer, rx_buffer_filled);
                 }
+                // A disconnected socket can still have unprocessed incoming data. So carry on ...
+            }
+            int bytesAvailable = skt->available();
+            if (bytesAvailable > 0) {
+                //Spark devices only support a 128 byte buffer, but we want one SPI transaction, so buffer the data
+                uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
+                int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
+                while (bytesAvailable > 0) {
+                    for (int i = 0; i < bytesAvailable; i++) {
+                        rx_buffer[i+rx_buffer_filled] = skt->read();
+                    }
+                    rx_buffer_filled += bytesAvailable;
+                    bytesAvailable = skt->available();
+                }
+                //set SPI header
+                uint16_t dataLength = rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE;
+                rx_buffer[0] = dataLength >> 8;
+                rx_buffer[1] = dataLength & 0xFF;
+                rx_buffer[2] = clientId;
+                //set BLE header
+                rx_buffer[3] = SOCKET_DATA_SERVICE;
+                rx_buffer[4] = (SOCKET_DATA << 4) | (socketId & 0x0F);
+                
+                spi_send(rx_buffer, rx_buffer_filled);
             }
         }
     }
@@ -502,8 +489,6 @@ void handle_custom_data(uint8_t *data, int length)
 {
     //if you use BLE.send from any connected DK, the data will end up here
 }
-
-
 
 
 
