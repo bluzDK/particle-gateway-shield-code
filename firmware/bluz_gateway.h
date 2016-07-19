@@ -62,25 +62,34 @@ typedef struct
 } client_t;
 
 class bluz_gateway {
-    
+
     public:
         bluz_gateway();
         void init();
-        void registerDataCallback(void (*data_callback)(uint8_t *data, uint16_t length));
+        void registerDataCallback(void (*dc)(uint8_t *data, uint16_t length));
         void loop();
-        
+        void set_ble_local(bool local);
+        void set_connection_parameters(uint16_t min, uint16_t max);
+
     private:
         void parseID(char *destination, uint8_t *buffer);
         char hexToAscii(uint8_t byte);
         void requestID();
+        void setLocalMode(bool local);
+        void sendConnectionParameters(uint16_t min, uint16_t max);
         void handle_custom_data(uint8_t *data, int length);
         void debugPrint(String msg);
         void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId);
         void spi_retreive();
         void spi_send(uint8_t *buf, int len);
-        
+
         client_t m_clients[MAX_CLIENTS];
         String gatewayID = "No gateway detected yet.";
         int timeGatewayConnected;
         bool gatewayIDDiscovered;
+        bool ble_local;
+        bool connectionParameters;
+        int minConnInterval, maxConnInterval;
+
+        void (*data_callback)(uint8_t *m_tx_buf, uint16_t size);
 };

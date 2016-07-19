@@ -6,38 +6,63 @@ void bluz_gateway::debugPrint(String msg) {
     Serial.println(String(millis()) + ":DEBUG: " + msg);
 }
 
-void bluz_gateway::handle_custom_data(uint8_t *data, int length) {
-    //if you use BLE.send from any connected DK, the data will end up here
-    
-}
-
 void bluz_gateway::init() {
     timeGatewayConnected = -1;
     gatewayIDDiscovered = false;
-    
+
     Particle.variable("gatewayID", gatewayID);
-    
+
     pinMode(SLAVE_SELECT, OUTPUT);
     digitalWrite(SLAVE_SELECT, HIGH);
-    
+
     SPI.begin();
     SPI.setBitOrder(LSBFIRST);
     SPI.setClockDivider(SPI_CLOCK_DIV128);
     SPI.setDataMode(SPI_MODE0);
-    
+
     pinMode(SLAVE_ALERT_PIN, INPUT_PULLDOWN);
     pinMode(SLAVE_PTS_PIN, INPUT_PULLDOWN);
-    
+
     pinMode(MASTER_READY_PIN, OUTPUT);
     digitalWrite(MASTER_READY_PIN, LOW);
-    
+
     Serial.begin(38400);
     debugPrint("STARTING!");
+    ble_local = false;
+    connectionParameters = false;
+}
+
+void bluz_gateway::registerDataCallback(void (*dc)(uint8_t *data, uint16_t length))
+{
+    data_callback = dc;
+}
+
+void bluz_gateway::set_ble_local(bool local) {
+    ble_local = local;
+}
+
+void bluz_gateway::set_connection_parameters(uint16_t min, uint16_t max) {
+    connectionParameters = true;
+    minConnInterval = min;
+    maxConnInterval = max;
 }
 
 void bluz_gateway::requestID() {
     uint8_t dummy[6] = {(( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 0, 0};
     spi_send(dummy, 6);
+}
+
+void bluz_gateway::setLocalMode(bool local) {
+    debugPrint("Starting to send local mode");
+    uint8_t dummy[6] = {(( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 1, (uint8_t)local};
+    spi_send(dummy, 6);
+    debugPrint("Done sending local mode");
+}
+
+void bluz_gateway::sendConnectionParameters(uint16_t min, uint16_t max) {
+    uint8_t dummy[9] = {(( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 2,
+                        (uint8_t)((min & 0xFF00) >> 8), (uint8_t)(min & 0xFF), (uint8_t)((max & 0xFF00) >> 8), (uint8_t)(max & 0xFF),};
+    spi_send(dummy, 9);
 }
 
 // Timer timer(20000, requestRequestID, true);
@@ -62,10 +87,18 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
 {
     uint8_t serviceID = buffer[0];
     debugPrint("Processing message of size " + String(length) + " with clientID " + String(clientId) + " and service ID " + String(serviceID));
-    
+
     switch (serviceID) {
         case SOCKET_DATA_SERVICE:
         {
+            if (ble_local && clientId == MAX_CLIENTS-1) {
+                if (connectionParameters) {
+                    sendConnectionParameters(minConnInterval, maxConnInterval);
+                }
+                debugPrint("Trying to stop the nrf51 from connecting");
+                setLocalMode(ble_local);
+                return;
+            }
             uint8_t type = (buffer[1] >> 4 & 0x0F);
             uint8_t socketId = (buffer[1] & 0xF);
             switch (type) {
@@ -89,6 +122,9 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
                     break;
                 case SOCKET_DISCONNECT:
                     // Particle.publish("Disconnecting Client", String(clientId));
+                    if (connectionParameters) {
+                        sendConnectionParameters(minConnInterval, maxConnInterval);
+                    }
                     debugPrint("Disconnecting Client" + String(clientId));
                     if (m_clients[clientId].connected) {
                         m_clients[clientId].socket.stop();
@@ -111,7 +147,9 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
             Particle.publish("bluz gateway device id", String(id));
             break;
         case CUSTOM_DATA_SERVICE:
-            handle_custom_data(buffer+1, length-1);
+            if (data_callback != NULL) {
+                data_callback(buffer+1, length-1);
+            }
             break;
     }
 }
@@ -122,13 +160,13 @@ void bluz_gateway::spi_retreive() {
     while (digitalRead(SLAVE_ALERT_PIN) == LOW) { }
     digitalWrite(MASTER_READY_PIN, LOW);
     debugPrint("Handshake complete");
-    
+
     //get the length of data available to read
     digitalWrite(SLAVE_SELECT, LOW);
     uint8_t byte1 = SPI.transfer(0xFF);
     uint8_t byte2 = SPI.transfer(0xFF);
     digitalWrite(SLAVE_SELECT, HIGH);
-    
+
     //if the nrf51 isn't ready yet, we receve 0xAA, so we wait
     while (byte1 == 0xAA && byte2 == 0xAA) {
         digitalWrite(SLAVE_SELECT, LOW);
@@ -137,13 +175,13 @@ void bluz_gateway::spi_retreive() {
         digitalWrite(SLAVE_SELECT, HIGH);
     }
     delay(2);
-    
+
     int serialBytesAvailable = (byte1 << 8) | byte2;
     debugPrint("Receiving SPI data of size " + String(serialBytesAvailable));
-    
+
     //if there is no data, we're done
     if (serialBytesAvailable == 0) { return; }
-    
+
     uint8_t tx_buffer[TX_BUFFER];
     //read the data one chunk at a time
     for (int chunkIndex = 0; chunkIndex < serialBytesAvailable; chunkIndex+=NRF51_SPI_BUFFER_SIZE)
@@ -156,25 +194,25 @@ void bluz_gateway::spi_retreive() {
             tx_buffer[chunkIndex+innerIndex] = SPI.transfer(0xFF);
         }
         digitalWrite(SLAVE_SELECT, HIGH);
-        
+
         //give the nrf51 time to resognize end of transmission and set SA back to LOW
         delay(2);
-        
+
         //if the nrf51 wasn't ready yet, we will receive this
         if (tx_buffer[chunkIndex] == 0xAA && tx_buffer[chunkIndex+chunkSize-1] == 0xAA) {
             chunkIndex-=NRF51_SPI_BUFFER_SIZE;
         }
     }
-    
+
     //now process the data one message at a time
     int msgPointer = 0;
     while (msgPointer < serialBytesAvailable) {
-        
+
         int msgLength = (tx_buffer[msgPointer] << 8) | tx_buffer[msgPointer+1];
         uint8_t clientId = tx_buffer[msgPointer+2];
         //move the pointer past the header
         msgPointer += SPI_HEADER_SIZE;
-        
+
         spi_data_process(tx_buffer+msgPointer, msgLength+BLE_HEADER_SIZE, clientId);
         debugPrint("Read length = " + String(msgLength));
         msgPointer += msgLength+BLE_HEADER_SIZE;
@@ -187,7 +225,7 @@ void bluz_gateway::spi_send(uint8_t *buf, int len) {
     //nrf51822 can't handle SPI data in chunks bigger than 256 bytes. split it up
     for (int i = 0; i < len; i+=254) {
         uint16_t size = (len-i > 254 ? 254 : len-i);
-        
+
         digitalWrite(SLAVE_SELECT, LOW);
         for (int j = 0; j < size; j++) {
             rxBuffer[j+1] = SPI.transfer(buf[j+i]);
@@ -197,7 +235,7 @@ void bluz_gateway::spi_send(uint8_t *buf, int len) {
         }
         digitalWrite(SLAVE_SELECT, HIGH);
         delay(50);
-        
+
         //if the nrf51 wasn't ready yet, we will receive this
         if (rxBuffer[i] == 0xAA && rxBuffer[i+size-1] == 0xAA) {
             i-=254;
@@ -220,7 +258,7 @@ void bluz_gateway::loop() {
         }
     }
 #endif
-    
+
     for (int clientId = 0; clientId < MAX_CLIENTS; clientId++) {
         if (!m_clients[clientId].connected) {continue;}
         if (!m_clients[clientId].socket.connected()) {
@@ -229,7 +267,7 @@ void bluz_gateway::loop() {
         int bytesAvailable = m_clients[clientId].socket.available();
         if (bytesAvailable > 0) {
             //Spark devices only support 128 byte buffer, but we want one SPI transaction, so buffer the data
-            
+
             uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
             int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
             while (bytesAvailable > 0) {
@@ -239,7 +277,7 @@ void bluz_gateway::loop() {
                 rx_buffer_filled += bytesAvailable;
                 bytesAvailable = m_clients[clientId].socket.available();
             }
-            
+
             //add SPI header
             rx_buffer[0] = (( (rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF00) >> 8);
             rx_buffer[1] = ( (rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF);
@@ -247,9 +285,9 @@ void bluz_gateway::loop() {
             //add BLE header, default to socket id of 0 for now since we only support one at the moment
             rx_buffer[3] = SOCKET_DATA_SERVICE;
             rx_buffer[4] = ((SOCKET_DATA << 4) & 0xF0) | (0 & 0x0F);;
-            
+
             // Spark.publish("Bytes Available", String(rx_buffer_filled));
-            
+
             spi_send(rx_buffer, rx_buffer_filled);
             // Particle.publish("Sending bytes through SPI", String(clientId) + "->BLE    - " + String(rx_buffer_filled));
             debugPrint(String(clientId) + "->BLE    - " + String(rx_buffer_filled));
