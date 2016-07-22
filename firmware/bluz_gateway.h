@@ -61,15 +61,27 @@ typedef struct
     bool connected = false;
 } client_t;
 
+typedef enum {
+    GET_ID=0,
+    SET_MODE,
+    SET_CONNECTION_PARAMETERS,
+    POLL_CONNECTIONS,
+    CONNECTION_RESULTS
+} INFO_COMMAND;
+
 class bluz_gateway {
 
     public:
         bluz_gateway();
         void init();
-        void registerDataCallback(void (*dc)(uint8_t *data, uint16_t length));
         void loop();
         void set_ble_local(bool local);
         void set_connection_parameters(uint16_t min, uint16_t max);
+        void poll_connections();
+        void send_peripheral_data(uint8_t id, uint8_t *data, uint16_t length);
+
+        void register_data_callback(void (*dc)(uint8_t *data, uint16_t length));
+        void register_gateway_event(void (*dc)(uint8_t event, uint8_t *data, uint16_t length));
 
     private:
         void parseID(char *destination, uint8_t *buffer);
@@ -82,6 +94,7 @@ class bluz_gateway {
         void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId);
         void spi_retreive();
         void spi_send(uint8_t *buf, int len);
+        void send_data(gateway_service_ids_t service, uint8_t id, uint8_t *data, uint16_t length);
 
         client_t m_clients[MAX_CLIENTS];
         String gatewayID = "No gateway detected yet.";
@@ -92,4 +105,5 @@ class bluz_gateway {
         int minConnInterval, maxConnInterval;
 
         void (*data_callback)(uint8_t *m_tx_buf, uint16_t size);
+        void (*event_callback)(uint8_t event, uint8_t *data, uint16_t length);
 };

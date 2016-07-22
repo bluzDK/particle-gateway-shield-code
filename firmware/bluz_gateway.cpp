@@ -32,9 +32,24 @@ void bluz_gateway::init() {
     connectionParameters = false;
 }
 
-void bluz_gateway::registerDataCallback(void (*dc)(uint8_t *data, uint16_t length))
+void bluz_gateway::send_data(gateway_service_ids_t service, uint8_t id, uint8_t *data, uint16_t length)
+{
+    int packet_length = 4+length;
+    uint8_t dummy[4+length];
+    uint8_t header[4] = {(( (packet_length-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (packet_length-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), id, service};
+    memcpy(dummy, header, 4);
+    memcpy(dummy+4, data, length);
+    spi_send(dummy, packet_length);
+}
+
+void bluz_gateway::register_data_callback(void (*dc)(uint8_t *data, uint16_t length))
 {
     data_callback = dc;
+}
+
+void bluz_gateway::register_gateway_event(void (*ec)(uint8_t event, uint8_t *data, uint16_t length))
+{
+    event_callback = ec;
 }
 
 void bluz_gateway::set_ble_local(bool local) {
@@ -47,22 +62,31 @@ void bluz_gateway::set_connection_parameters(uint16_t min, uint16_t max) {
     maxConnInterval = max;
 }
 
+void bluz_gateway::poll_connections()
+{
+    uint8_t dummy[2] = {POLL_CONNECTIONS, 0};
+    send_data(INFO_DATA_SERVICE, MAX_CLIENTS-1, dummy, 2);
+}
+void bluz_gateway::send_peripheral_data(uint8_t id, uint8_t *data, uint16_t length)
+{
+    send_data(CUSTOM_DATA_SERVICE, id, data, length);
+}
+
 void bluz_gateway::requestID() {
-    uint8_t dummy[6] = {(( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 0, 0};
-    spi_send(dummy, 6);
+    uint8_t dummy[2] = {GET_ID, 0};
+    send_data(INFO_DATA_SERVICE, MAX_CLIENTS-1, dummy, 2);
 }
 
 void bluz_gateway::setLocalMode(bool local) {
-    debugPrint("Starting to send local mode");
-    uint8_t dummy[6] = {(( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (6-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 1, (uint8_t)local};
-    spi_send(dummy, 6);
-    debugPrint("Done sending local mode");
+    uint8_t dummy[2] = {SET_MODE, (uint8_t)local};
+    send_data(INFO_DATA_SERVICE, MAX_CLIENTS-1, dummy, 2);
 }
 
 void bluz_gateway::sendConnectionParameters(uint16_t min, uint16_t max) {
-    uint8_t dummy[9] = {(( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 2,
-                        (uint8_t)((min & 0xFF00) >> 8), (uint8_t)(min & 0xFF), (uint8_t)((max & 0xFF00) >> 8), (uint8_t)(max & 0xFF),};
-    spi_send(dummy, 9);
+    //TO DO: This needs more refinement on when they can be sent...
+    // uint8_t dummy[9] = {(( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 2,
+    // (uint8_t)((min & 0xFF00) >> 8), (uint8_t)(min & 0xFF), (uint8_t)((max & 0xFF00) >> 8), (uint8_t)(max & 0xFF),};
+    // spi_send(dummy, 9);
 }
 
 // Timer timer(20000, requestRequestID, true);
@@ -140,11 +164,21 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
             break;
         }
         case INFO_DATA_SERVICE:
-            char id[25];
-            parseID(id, buffer+1);
-            gatewayID = String(id);
-            debugPrint("You're gateway ID is " + String(id));
-            Particle.publish("bluz gateway device id", String(id));
+            debugPrint("Info data service with command " + String(buffer[1]));
+            switch (buffer[1]) {
+                case 'b':
+                    char id[25];
+                    parseID(id, buffer+1);
+                    gatewayID = String(id);
+                    debugPrint("You're gateway ID is " + String(id));
+                    Particle.publish("bluz gateway device id", String(id));
+                    break;
+                case CONNECTION_RESULTS:
+                    if (event_callback != NULL) {
+                        event_callback(buffer[1], buffer+2, length-BLE_HEADER_SIZE);
+                    }
+                    break;
+            }
             break;
         case CUSTOM_DATA_SERVICE:
             if (data_callback != NULL) {
