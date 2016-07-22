@@ -13,6 +13,10 @@ void handle_custom_data(uint8_t *data, uint16_t length) {
 
 void handle_gateway_event(uint8_t event, uint8_t *data, uint16_t length) {
     //will return any polling queries from the gateway here
+    uint8_t rsp[2];
+    rsp[0] = 'H';
+    rsp[1] = 'i';
+
     switch (event) {
         case CONNECTION_RESULTS:
             String online_devices = "";
@@ -21,6 +25,7 @@ void handle_gateway_event(uint8_t event, uint8_t *data, uint16_t length) {
                     online_devices +="O ";
                 } else {
                     online_devices +="X ";
+                    gateway.send_peripheral_data(i, rsp, 2);
                 }
             }
             Particle.publish("Bluz Devices Online", online_devices);
@@ -45,4 +50,4 @@ void loop() {
         timeToNextPoll = POLL_CONNECTIONS_INTERVAL + millis();
         gateway.poll_connections();
     }
-}
+}}
