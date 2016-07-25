@@ -166,17 +166,18 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
         case INFO_DATA_SERVICE:
             debugPrint("Info data service with command " + String(buffer[1]));
             switch (buffer[1]) {
-                case 'b':
+                case CONNECTION_RESULTS:
+                    if (event_callback != NULL) {
+                        event_callback(buffer[1], buffer+2, length-BLE_HEADER_SIZE);
+                    }
+                    break;
+                case 0xb1:
+                    //all bluz ID's start with b1, so this must be
                     char id[25];
                     parseID(id, buffer+1);
                     gatewayID = String(id);
                     debugPrint("You're gateway ID is " + String(id));
                     Particle.publish("bluz gateway device id", String(id));
-                    break;
-                case CONNECTION_RESULTS:
-                    if (event_callback != NULL) {
-                        event_callback(buffer[1], buffer+2, length-BLE_HEADER_SIZE);
-                    }
                     break;
             }
             break;
@@ -251,6 +252,7 @@ void bluz_gateway::spi_retreive() {
         debugPrint("Read length = " + String(msgLength));
         msgPointer += msgLength+BLE_HEADER_SIZE;
     }
+    debugPrint("All done in SPI Retreive");
 }
 
 void bluz_gateway::spi_send(uint8_t *buf, int len) {
@@ -301,6 +303,7 @@ void bluz_gateway::loop() {
         int bytesAvailable = m_clients[clientId].socket.available();
         if (bytesAvailable > 0) {
             //Spark devices only support 128 byte buffer, but we want one SPI transaction, so buffer the data
+            debugPrint("Receiving Network data of size " + String(bytesAvailable));
 
             uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
             int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
