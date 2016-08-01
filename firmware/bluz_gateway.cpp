@@ -7,6 +7,7 @@ void bluz_gateway::debugPrint(String msg) {
 }
 
 void bluz_gateway::init() {
+    connectedOnce = false;
     timeGatewayConnected = -1;
     gatewayIDDiscovered = false;
 
@@ -164,11 +165,13 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
             break;
         }
         case INFO_DATA_SERVICE:
-            debugPrint("Info data service with command " + String(buffer[1]));
+            debugPrint("Info data service with command " + char(buffer[1]));
             switch (buffer[1]) {
                 case CONNECTION_RESULTS:
                     if (event_callback != NULL) {
+                        debugPrint("Calling event callback");
                         event_callback(buffer[1], buffer+2, length-BLE_HEADER_SIZE);
+                        debugPrint("Event callback done");
                     }
                     break;
                 case 0xb1:
@@ -290,7 +293,11 @@ void bluz_gateway::loop() {
     if (!Particle.connected()) {
         Particle.connect();
         if (!waitFor(Particle.connected, 60000)) {
-            WiFi.listen();
+            if (!connectedOnce) {
+                WiFi.listen();
+            }
+        } else {
+            connectedOnce = true;
         }
     }
 #endif
@@ -307,13 +314,16 @@ void bluz_gateway::loop() {
 
             uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
             int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
+            debugPrint("About to fill buffer");
             while (bytesAvailable > 0) {
                 for (int i = 0; i < bytesAvailable; i++) {
                     rx_buffer[i+rx_buffer_filled] = m_clients[clientId].socket.read();
                 }
                 rx_buffer_filled += bytesAvailable;
                 bytesAvailable = m_clients[clientId].socket.available();
+                debugPrint("Available: " + String(rx_buffer_filled) + " Filled: " + String(rx_buffer_filled));
             }
+            debugPrint("Buffer filled with " + String(rx_buffer_filled));
 
             //add SPI header
             rx_buffer[0] = (( (rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF00) >> 8);
@@ -325,6 +335,7 @@ void bluz_gateway::loop() {
 
             // Spark.publish("Bytes Available", String(rx_buffer_filled));
 
+            debugPrint("About to send through SPI");
             spi_send(rx_buffer, rx_buffer_filled);
             // Particle.publish("Sending bytes through SPI", String(clientId) + "->BLE    - " + String(rx_buffer_filled));
             debugPrint(String(clientId) + "->BLE    - " + String(rx_buffer_filled));

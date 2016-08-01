@@ -102,6 +102,7 @@ class bluz_gateway {
         bool ble_local;
         bool connectionParameters;
         int minConnInterval, maxConnInterval;
+        bool connectedOnce;
 
         void (*data_callback)(uint8_t *m_tx_buf, uint16_t size);
         void (*event_callback)(uint8_t event, uint8_t *data, uint16_t length);
