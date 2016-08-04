@@ -27,7 +27,7 @@
 
 #define CLOUD_DOMAIN "device.spark.io"
 // #define CLOUD_DOMAIN "10.1.10.175"
-#define RX_BUFFER 1024
+#define RX_BUFFER 1098
 #define TX_BUFFER RX_BUFFER
 #define TCPCLIENT_BUF_MAX_SIZE TX_BUFFER
 #define MAX_CLIENTS 4

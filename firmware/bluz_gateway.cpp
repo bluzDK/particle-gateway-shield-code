@@ -203,16 +203,25 @@ void bluz_gateway::spi_retreive() {
     digitalWrite(SLAVE_SELECT, LOW);
     uint8_t byte1 = SPI.transfer(0xFF);
     uint8_t byte2 = SPI.transfer(0xFF);
-    digitalWrite(SLAVE_SELECT, HIGH);
+
+    //make sure we capture the nrf51 setting the alert pin back to low
+    bool set = false;
+    while (digitalRead(SLAVE_ALERT_PIN) == HIGH) {
+        if (!set) { digitalWrite(SLAVE_SELECT, HIGH); set=true; }
+    }
 
     //if the nrf51 isn't ready yet, we receve 0xAA, so we wait
     while (byte1 == 0xAA && byte2 == 0xAA) {
         digitalWrite(SLAVE_SELECT, LOW);
         byte1 = SPI.transfer(0xFF);
         byte2 = SPI.transfer(0xFF);
-        digitalWrite(SLAVE_SELECT, HIGH);
+
+        //make sure we capture the nrf51 setting the alert pin back to low
+        bool set = false;
+        while (digitalRead(SLAVE_ALERT_PIN) == HIGH) {
+            if (!set) { digitalWrite(SLAVE_SELECT, HIGH); set=true; }
+        }
     }
-    delay(2);
 
     int serialBytesAvailable = (byte1 << 8) | byte2;
     debugPrint("Receiving SPI data of size " + String(serialBytesAvailable));
@@ -231,7 +240,12 @@ void bluz_gateway::spi_retreive() {
         for (int innerIndex = 0; innerIndex < chunkSize; innerIndex++) {
             tx_buffer[chunkIndex+innerIndex] = SPI.transfer(0xFF);
         }
-        digitalWrite(SLAVE_SELECT, HIGH);
+
+        //make sure we capture the nrf51 setting the alert pin back to low
+        bool set = false;
+        while (digitalRead(SLAVE_ALERT_PIN) == HIGH) {
+            if (!set) { digitalWrite(SLAVE_SELECT, HIGH); set=true; }
+        }
 
         //give the nrf51 time to resognize end of transmission and set SA back to LOW
         delay(2);
