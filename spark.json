@@ -2,6 +2,6 @@
   "name": "bluz_gateway",
   "author": "Eric Ely <ericely@bluz.io>",
   "license": "GPL",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "A library to turn a Particle board into a bluz gateway when paired with a Gateway Shield."
 }
