@@ -37,7 +37,7 @@ void bluz_gateway::send_data(gateway_service_ids_t service, uint8_t id, uint8_t 
 {
     int packet_length = 4+length;
     uint8_t dummy[4+length];
-    uint8_t header[4] = {(( (packet_length-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (packet_length-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), id, service};
+    uint8_t header[4] = {(( (packet_length-GW_SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (packet_length-GW_SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), id, service};
     memcpy(dummy, header, 4);
     memcpy(dummy+4, data, length);
     spi_send(dummy, packet_length);
@@ -85,7 +85,7 @@ void bluz_gateway::setLocalMode(bool local) {
 
 void bluz_gateway::sendConnectionParameters(uint16_t min, uint16_t max) {
     //TO DO: This needs more refinement on when they can be sent...
-    // uint8_t dummy[9] = {(( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (9-SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 2,
+    // uint8_t dummy[9] = {(( (9-GW_SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (9-GW_SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 2,
     // (uint8_t)((min & 0xFF00) >> 8), (uint8_t)(min & 0xFF), (uint8_t)((max & 0xFF00) >> 8), (uint8_t)(max & 0xFF),};
     // spi_send(dummy, 9);
 }
@@ -251,7 +251,7 @@ void bluz_gateway::spi_retreive() {
         int msgLength = (tx_buffer[msgPointer] << 8) | tx_buffer[msgPointer+1];
         uint8_t clientId = tx_buffer[msgPointer+2];
         //move the pointer past the header
-        msgPointer += SPI_HEADER_SIZE;
+        msgPointer += GW_SPI_HEADER_SIZE;
 
         spi_data_process(tx_buffer+msgPointer, msgLength+BLE_HEADER_SIZE, clientId);
         debugPrint("Read length = " + String(msgLength));
@@ -314,8 +314,8 @@ void bluz_gateway::loop() {
             //Spark devices only support 128 byte buffer, but we want one SPI transaction, so buffer the data
             debugPrint("Receiving Network data of size " + String(bytesAvailable));
 
-            uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+SPI_HEADER_SIZE];
-            int rx_buffer_filled = BLE_HEADER_SIZE+SPI_HEADER_SIZE;
+            uint8_t rx_buffer[RX_BUFFER+BLE_HEADER_SIZE+GW_SPI_HEADER_SIZE];
+            int rx_buffer_filled = BLE_HEADER_SIZE+GW_SPI_HEADER_SIZE;
             debugPrint("About to fill buffer");
             while (bytesAvailable > 0) {
                 for (int i = 0; i < bytesAvailable; i++) {
@@ -328,8 +328,8 @@ void bluz_gateway::loop() {
             debugPrint("Buffer filled with " + String(rx_buffer_filled));
 
             //add SPI header
-            rx_buffer[0] = (( (rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF00) >> 8);
-            rx_buffer[1] = ( (rx_buffer_filled-BLE_HEADER_SIZE-SPI_HEADER_SIZE) & 0xFF);
+            rx_buffer[0] = (( (rx_buffer_filled-BLE_HEADER_SIZE-GW_SPI_HEADER_SIZE) & 0xFF00) >> 8);
+            rx_buffer[1] = ( (rx_buffer_filled-BLE_HEADER_SIZE-GW_SPI_HEADER_SIZE) & 0xFF);
             rx_buffer[2] = (uint8_t)clientId;
             //add BLE header, default to socket id of 0 for now since we only support one at the moment
             rx_buffer[3] = SOCKET_DATA_SERVICE;
