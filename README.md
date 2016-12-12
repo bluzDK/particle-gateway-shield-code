@@ -8,8 +8,8 @@ Bluz is a Development Kit (DK) that implements the Wiring language and talks to 
 
 The code in this repository is used for a Particle Core/Photon/Electron to act as a gateway device using the bluz gateway shield. For more information on setting up the gateway shield, please see the [documentation.](http://docs.bluz.io/tutorials/gateway_getting_started/)
 
-The code is available as a library in the Particle Web IDE under the titel Bluz Gateway.
+The code is available as a library in the Particle Web IDE under the title Bluz Gateway.
 
 ##Programming Particle Device
 
-For full instructions to program a Particle board, please refer to the [bluz docs on programming the device.](http://docs.bluz.io/tutorials/gateway_getting_started/) 
+For full instructions, please refer to the [bluz docs on programming the Particle device.](http://docs.bluz.io/tutorials/gateway_getting_started/) 
