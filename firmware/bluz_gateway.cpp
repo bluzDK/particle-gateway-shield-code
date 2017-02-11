@@ -63,6 +63,17 @@ void bluz_gateway::set_connection_parameters(uint16_t min, uint16_t max) {
     maxConnInterval = max;
 }
 
+void bluz_gateway::send_connection_parameters() {
+    uint8_t bytes[5];
+    bytes[0] = SET_CONNECTION_PARAMETERS;
+    bytes[1] = minConnInterval >> 8;
+    bytes[2] = minConnInterval;
+    bytes[3] = maxConnInterval >> 8;
+    bytes[4] = maxConnInterval;
+
+    send_data(INFO_DATA_SERVICE, MAX_CLIENTS-1, bytes, 5);
+}
+
 void bluz_gateway::poll_connections()
 {
     uint8_t dummy[2] = {POLL_CONNECTIONS, 0};
@@ -81,13 +92,6 @@ void bluz_gateway::requestID() {
 void bluz_gateway::setLocalMode(bool local) {
     uint8_t dummy[2] = {SET_MODE, (uint8_t)local};
     send_data(INFO_DATA_SERVICE, MAX_CLIENTS-1, dummy, 2);
-}
-
-void bluz_gateway::sendConnectionParameters(uint16_t min, uint16_t max) {
-    //TO DO: This needs more refinement on when they can be sent...
-    // uint8_t dummy[9] = {(( (9-GW_SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF00) >> 8), ( (9-GW_SPI_HEADER_SIZE-BLE_HEADER_SIZE) & 0xFF), MAX_CLIENTS-1, INFO_DATA_SERVICE, 2,
-    // (uint8_t)((min & 0xFF00) >> 8), (uint8_t)(min & 0xFF), (uint8_t)((max & 0xFF00) >> 8), (uint8_t)(max & 0xFF),};
-    // spi_send(dummy, 9);
 }
 
 // Timer timer(20000, requestRequestID, true);
@@ -117,9 +121,6 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
         case SOCKET_DATA_SERVICE:
         {
             if (ble_local && clientId == MAX_CLIENTS-1) {
-                if (connectionParameters) {
-                    sendConnectionParameters(minConnInterval, maxConnInterval);
-                }
                 debugPrint("Trying to stop the nrf51 from connecting");
                 setLocalMode(ble_local);
                 return;
@@ -147,9 +148,6 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
                     break;
                 case SOCKET_DISCONNECT:
                     // Particle.publish("Disconnecting Client", String(clientId));
-                    if (connectionParameters) {
-                        sendConnectionParameters(minConnInterval, maxConnInterval);
-                    }
                     debugPrint("Disconnecting Client" + String(clientId));
                     if (m_clients[clientId].connected) {
                         m_clients[clientId].socket.stop();
@@ -181,6 +179,12 @@ void bluz_gateway::spi_data_process(uint8_t *buffer, uint16_t length, uint8_t cl
                     gatewayID = String(id);
                     debugPrint("You're gateway ID is " + String(id));
                     Particle.publish("bluz gateway device id", String(id));
+                    if (connectionParameters) {
+                        Particle.publish("Setting connection parameters", String(minConnInterval) + ", " + String(maxConnInterval));
+                        debugPrint("Trying to set connection interval");
+                        send_connection_parameters();
+                        return;
+                    }
                     break;
             }
             break;
@@ -349,7 +353,7 @@ void bluz_gateway::loop() {
     {
         spi_retreive();
     }
-    if (timeGatewayConnected > 0 && millis() - timeGatewayConnected > 20000 && !gatewayIDDiscovered) {
+    if (timeGatewayConnected > 0 && millis() - timeGatewayConnected > 10000 && !gatewayIDDiscovered) {
         debugPrint("Asking for id");
         requestID();
         gatewayIDDiscovered = true;
