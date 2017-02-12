@@ -353,7 +353,7 @@ void bluz_gateway::loop() {
     {
         spi_retreive();
     }
-    if (timeGatewayConnected > 0 && millis() - timeGatewayConnected > 10000 && !gatewayIDDiscovered) {
+    if (timeGatewayConnected > 0 && millis() - timeGatewayConnected > 15000 && !gatewayIDDiscovered) {
         debugPrint("Asking for id");
         requestID();
         gatewayIDDiscovered = true;
