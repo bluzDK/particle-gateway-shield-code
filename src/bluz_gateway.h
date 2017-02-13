@@ -87,7 +87,7 @@ class bluz_gateway {
         char hexToAscii(uint8_t byte);
         void requestID();
         void setLocalMode(bool local);
-        void sendConnectionParameters(uint16_t min, uint16_t max);
+        void send_connection_parameters();
         void handle_custom_data(uint8_t *data, int length);
         void debugPrint(String msg);
         void spi_data_process(uint8_t *buffer, uint16_t length, uint8_t clientId);
